@@ -1,14 +1,25 @@
 import numpy as np
 from skimage.util import view_as_windows
 import numpy.matlib
+import compute_stat
 
 class SparseSolver:
+    def __init__(self, dictionary_learning=True, num_learning_iterations=20):
+        self.dictionary_learning = dictionary_learning
+        self.num_learning_iterations = num_learning_iterations
+
     def __call__(self, img, dict, sparseland_model):
         patches = self.create_overlapping_patches(img, sparseland_model["patch_size"])
-        [est_patches, est_coeffs] = self.batch_thresholding(dict, patches, sparseland_model["epsilon"])
-        est_dct = self.col2im(est_patches, sparseland_model["patch_size"], img.shape)
 
-        return est_dct
+        if self.dictionary_learning:
+            dict, mean_error, mean_cardinality = self.unitary_dictionary_learning(patches, dict,
+                                                                                  self.num_learning_iterations,
+                                                                                  sparseland_model["epsilon"])
+
+        [est_patches, est_coeffs] = self.batch_thresholding(dict, patches, sparseland_model["epsilon"])
+        reconst_img = self.col2im(est_patches, sparseland_model["patch_size"], img.shape)
+
+        return reconst_img
 
     def create_overlapping_patches(self, img, patch_size):
         h, w = img.shape
@@ -26,10 +37,8 @@ class SparseSolver:
         return flattened_patches
 
     def batch_thresholding(self, dict, patches, epsilon):
-        # BATCH_THRESHOLDING Solve the pursuit problem via the error-constraint
-        # Thresholding pursuit
-        #
-        # Solves the following problem:
+        # BATCH_THRESHOLDING solves the pursuit problem via the error-constraint thresholding pursuit.
+        # It solves the following problem:
         #   min_{alpha_i} \sum_i || alpha_i ||_0
         #                  s.t.  ||y_i - D alpha_i||_2**2 \leq epsilon**2 for all i,
         # where D is a dictionary of size n X n, y_i are the input signals of
@@ -125,3 +134,54 @@ class SparseSolver:
         im = num_im / denom_im
 
         return im
+
+    def unitary_dictionary_learning(self, Y, D_init, num_iterations, pursuit_param):
+        # UNITARY_DICTIONARY_LEARNING Train a unitary dictionary via
+        # Procrustes analysis.
+        #
+        # Inputs:
+        #   Y              - A matrix that contains the training patches
+        #                    (as vectors) as its columns
+        #   D_init         - Initial UNITARY dictionary
+        #   num_iterations - Number of dictionary updates
+        #   pursuit_param  - The stopping criterion for the pursuit algorithm
+        #
+        # Outputs:
+        #   D          - The trained UNITARY dictionary
+        #   mean_error - A vector, containing the average representation error,
+        #                computed per iteration and averaged over the total
+        #                training examples
+        #   mean_cardinality - A vector, containing the average number of nonzeros,
+        #                      computed per iteration and averaged over the total
+        #                      training examples
+
+        # Allocate a vector that stores the average representation
+        # error per iteration
+        mean_error = np.zeros(num_iterations)
+
+        # Allocate a vector that stores the average cardinality per iteration
+        mean_cardinality = np.zeros(num_iterations)
+
+        # Set the dictionary to be D_init
+        D = np.copy(D_init)
+
+        # Run the Procrustes analysis algorithm for num_iterations
+        for i in range(num_iterations):
+            # Compute the representation of each noisy patch
+            [X, A] = self.batch_thresholding(D, Y, pursuit_param)
+
+            # Compute and display the statistics
+            print('Iter %02d: ' % (i + 1), end=" ")
+            mean_error[i], mean_cardinality[i] = compute_stat.compute_stat(X, Y, A)
+
+            # Update the dictionary via Procrustes analysis.
+            # Solve D = argmin_D || Y - DA ||_F^2 s.t. D'D = I,
+            # where 'A' is a matrix that contains all the estimated coefficients,
+            # and 'Y' contains the training examples. Use the Procrustes algorithm.
+            # Write your code here... D = ???
+
+            [U, _, V] = np.linalg.svd(np.matmul(A, Y.T))
+            D = np.matmul(V.T, U.T)
+            # not np.matmul(V, U.T). See https://stackoverflow.com/questions/50930899/svd-command-in-python-v-s-matlab
+
+        return D, mean_error, mean_cardinality
